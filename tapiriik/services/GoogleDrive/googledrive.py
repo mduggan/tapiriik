@@ -31,13 +31,12 @@ FOLDER_MIMETYPE = 'application/vnd.google-apps.folder'
 
 class GoogleDriveService(StorageServiceBase):
     ID = "googledrive"
-    DisplayName = "GoogleDrive"
+    DisplayName = "Google Drive"
     DisplayAbbreviation = "GD"
     AuthenticationType = ServiceAuthenticationType.OAuth
     Configurable = True
     ReceivesStationaryActivities = False
     AuthenticationNoFrame = True
-    UploadRetryCount = 9000
 
     def _oauthFlow(self):
         return_url = WEB_ROOT + reverse("oauth_return", kwargs={"service": self.ID})
