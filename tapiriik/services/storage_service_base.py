@@ -1,10 +1,9 @@
-from tapiriik.services.service_base import ServiceAuthenticationType, ServiceBase
-from tapiriik.services.api import APIException, UserException, UserExceptionType, APIExcludeActivity
+from tapiriik.services.service_base import ServiceBase
+from tapiriik.services.api import UserException, UserExceptionType, APIExcludeActivity
 from tapiriik.services.interchange import ActivityType, UploadedActivity
 from tapiriik.services.exception_tools import strip_context
 from tapiriik.services.gpx import GPXIO
 from tapiriik.services.tcx import TCXIO
-from django.core.urlresolvers import reverse
 import re
 import lxml
 from datetime import datetime
@@ -38,7 +37,6 @@ class StorageServiceBase(ServiceBase):
         ActivityType.Elliptical: "elliptical",
         ActivityType.Other: "(other|unknown)"
     }
-    ConfigurationDefaults = {"SyncRoot": "/", "UploadUntagged": False, "Format":"tcx", "Filename":"%Y-%m-%d_#NAME_#TYPE"}
 
     SupportsHR = SupportsCadence = True
 
@@ -48,8 +46,9 @@ class StorageServiceBase(ServiceBase):
         """ Return a client object for the service.  Will be passed back in to the various calls below """
         raise NotImplementedError()
 
-    def GetFileContents(self, svcRec, client, path, cache):
-        """ Return a tuple of (contents, version_number) for a given path. """
+    def GetFileContents(self, svcRec, client, path, storageid, cache):
+        """ Return a tuple of (contents, version_number) for a given path.  If this file was just enumerated,
+        storageid will be given (see EnumerateFiles below), otherwise it will be None.  """
         raise NotImplementedError()
 
     def PutFileContents(self, svcRec, client, path, contents, cache):
@@ -57,7 +56,7 @@ class StorageServiceBase(ServiceBase):
         raise NotImplementedError()
 
     def MoveFile(self, svcRec, client, path, destPath, cache):
-        """ Move/rename the file 'path' to 'destPath'. """
+        """ Move/rename the file "path" to "destPath". """
         raise NotImplementedError()
 
     def ServiceCacheDB(self):
@@ -65,14 +64,14 @@ class StorageServiceBase(ServiceBase):
         raise NotImplementedError()
 
     def SyncRoot(self, svcRec):
-        """ Get the root directory on the service that we will be syncing to, eg, '/tapiriik/' """
+        """ Get the root directory on the service that we will be syncing to, eg, "/tapiriik/" """
         raise NotImplementedError()
 
     def EnumerateFiles(self, svcRec, client, root, cache):
         """ List the files available on the remote (applying some filtering,
         and using cache as appropriate.  Should yield tuples of:
-          (fullPath, relPath, fileid)
-        where fileid is some unique id that can be passed back to the functions above.
+          (fullPath, relPath, storageid, revision)
+        where storageid is some unique id that can be passed back to GetFileContents above.
         """
         raise NotImplementedError()
 
@@ -82,8 +81,8 @@ class StorageServiceBase(ServiceBase):
                 return act
         return None
 
-    def _getActivity(self, serviceRecord, client, path, cache):
-        activityData, revision = self.GetFileContents(serviceRecord, client, path, cache)
+    def _getActivity(self, serviceRecord, client, path, storageid, cache):
+        activityData, revision = self.GetFileContents(serviceRecord, client, path, storageid, cache)
 
         try:
             if path.lower().endswith(".tcx"):
@@ -117,7 +116,7 @@ class StorageServiceBase(ServiceBase):
         activities = []
         exclusions = []
 
-        for (path, relPath, fileid, revision) in self.EnumerateFiles(svcRec, client, syncRoot, cache):
+        for (path, relPath, storageid, revision) in self.EnumerateFiles(svcRec, client, syncRoot, cache):
             hashedRelPath = self._hash_path(relPath)
             if hashedRelPath in cache["Activities"]:
                 existing = cache["Activities"][hashedRelPath]
@@ -146,7 +145,7 @@ class StorageServiceBase(ServiceBase):
                 logger.debug("Retrieving %s (%s)" % (path, "outdated meta cache" if existing else "not in meta cache"))
                 # get the full activity
                 try:
-                    act, rev = self._getActivity(svcRec, client, path, cache)
+                    act, rev = self._getActivity(svcRec, client, path, storageid, cache)
                 except APIExcludeActivity as e:
                     logger.info("Encountered APIExcludeActivity %s" % str(e))
                     exclusions.append(strip_context(e))
@@ -193,7 +192,7 @@ class StorageServiceBase(ServiceBase):
         path = activity.ServiceData["Path"]
         client = self.GetClient(serviceRecord)
         cache = self._getCache(serviceRecord)
-        fullActivity, rev = self._getActivity(serviceRecord, client, path, cache)
+        fullActivity, rev = self._getActivity(serviceRecord, client, path, None, cache)
         self._storeCache(serviceRecord, cache)
         fullActivity.Type = activity.Type
         fullActivity.ServiceDataCollection = activity.ServiceDataCollection
@@ -211,7 +210,7 @@ class StorageServiceBase(ServiceBase):
         # Used the activity UID for the longest time, but that causes inefficiency when >1 file represents the same activity
         # So, this:
         csp = hashlib.new("md5")
-        csp.update(path.encode('utf-8'))
+        csp.update(path.encode("utf-8"))
         return csp.hexdigest()
 
     def _clean_activity_name(self, name):
@@ -248,8 +247,8 @@ class StorageServiceBase(ServiceBase):
         client = self.GetClient(serviceRecord)
 
         syncRoot = self.SyncRoot(serviceRecord)
-        if not syncRoot.endswith('/'):
-            syncRoot += '/'
+        if not syncRoot.endswith("/"):
+            syncRoot += "/"
         fpath = syncRoot + fname
 
         cache = self._getCache(serviceRecord)

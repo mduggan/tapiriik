@@ -10,6 +10,7 @@ import logging
 import pickle
 logger = logging.getLogger(__name__)
 
+
 class DropboxService(StorageServiceBase):
     ID = "dropbox"
     DisplayName = "Dropbox"
@@ -18,7 +19,7 @@ class DropboxService(StorageServiceBase):
     AuthenticationNoFrame = True  # damn dropbox, spoiling my slick UI
     Configurable = True
 
-    ConfigurationDefaults = {"SyncRoot": "/", "UploadUntagged": False, "Format":"tcx", "Filename":"%Y-%m-%d_#NAME_#TYPE"}
+    ConfigurationDefaults = {"SyncRoot": "/", "UploadUntagged": False, "Format": "tcx", "Filename": "%Y-%m-%d_#NAME_#TYPE"}
 
     def GetClient(self, serviceRec):
         if serviceRec.Authorization["Full"]:
@@ -46,7 +47,6 @@ class DropboxService(StorageServiceBase):
         return sess.build_authorize_url(reqToken, oauth_callback=WEB_ROOT + reverse("oauth_return", kwargs={"service": "dropbox", "level": "full" if full else "normal"}))
 
     def RetrieveAuthorizationToken(self, req, level):
-        from tapiriik.services import Service
         tokenKey = req.GET["oauth_token"]
 
         redis_key = "dropbox:oauth:%s" % tokenKey
@@ -120,9 +120,6 @@ class DropboxService(StorageServiceBase):
         structCache[:] = (x for x in structCache if x["Path"] in curDirs or x not in children)  # delete ones that don't exist
 
     def EnumerateFiles(self, svcRec, dbcl, root, cache):
-        """ List the files available on the remote (applying some sensible
-            filtering, and using ServiceCacheDB as appropriate.  Should yield tuples of:
-            (fullPath, relPath, fileid)"""
         if "Structure" not in cache:
             cache["Structure"] = []
         self._folderRecurse(cache["Structure"], dbcl, root)
@@ -136,7 +133,7 @@ class DropboxService(StorageServiceBase):
                     relPath = path.replace("/Apps/tapiriik/", "", 1)  # dropbox api is meh api
                 yield (path, relPath, path, file["Rev"])
 
-    def GetFileContents(self, serviceRecord, dbcl, path, cache):
+    def GetFileContents(self, serviceRecord, dbcl, path, storageid, cache):
         try:
             f, metadata = dbcl.get_file_and_metadata(path)
         except rest.ErrorResponse as e:
