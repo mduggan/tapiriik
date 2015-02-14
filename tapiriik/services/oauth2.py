@@ -3,7 +3,10 @@ from tapiriik.services.sessioncache import SessionCache
 from datetime import timedelta
 import requests
 import urllib.parse
+import logging
 
+
+logger = logging.getLogger(__name__)
 
 class OAuth2Client():
     """
@@ -34,6 +37,24 @@ class OAuth2Client():
             self._tokenCache.Set(serviceRec.ExternalID, token)
 
         return {"Authorization": "Bearer %s" % token}
+
+    def revokeAuthorization(self, serviceRec, revokeUrl, token=None):
+        # Implements most of the work for ServiceBase.RevokeAuthorization.
+        token = token or self._tokenCache.Get(serviceRec.ExternalID)
+        if not token:
+            return
+        resp = requests.post(revokeUrl, data={"token": token})
+        if resp.status_code == 400:
+            try:
+                result = resp.json()
+                if result.get("error") == "invalid_token":
+                    logger.debug("Server said token %s invalid when we tried to revoke it, oh well.." % token)
+                    # Token wasn't valid anyway, we're good
+                    return
+            except ValueError:
+                raise APIException("Error revoking oauth2 token, status " + str(resp.status_code) + " resp " + resp.text)
+        elif resp.status_code != 200:
+            raise APIException("Unable to revoke oauth2 token, status " + str(resp.status_code) + " resp " + resp.text)
 
     def retrieveAuthorizationToken(self, service, req, redirectUri, getUidCallback):
         """
