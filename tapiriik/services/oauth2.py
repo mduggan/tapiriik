@@ -85,14 +85,25 @@ class OAuth2Client():
         auth_headers = self._getAuthHeaders(serviceRec, token=access_token)
         if headers:
             auth_headers.update(headers)
-
         return requests.get(url, params=params, headers=auth_headers)
+
+    def put(self, serviceRec, url, params=None, data=None, headers=None, access_token=None):
+        auth_headers = self._getAuthHeaders(serviceRec, token=access_token)
+        if headers:
+            auth_headers.update(headers)
+        return requests.put(url, params=params, data=data, headers=auth_headers)
 
     def post(self, serviceRec, url, params=None, data=None, headers=None, access_token=None):
         auth_headers = self._getAuthHeaders(serviceRec, token=access_token)
         if headers:
             auth_headers.update(headers)
         return requests.post(url, params=params, data=data, headers=auth_headers)
+
+    def patch(self, serviceRec, url, params=None, data=None, headers=None, access_token=None):
+        auth_headers = self._getAuthHeaders(serviceRec, token=access_token)
+        if headers:
+            auth_headers.update(headers)
+        return requests.patch(url, params=params, data=data, headers=auth_headers)
 
     def session(self, serviceRec):
         s = requests.Session()
