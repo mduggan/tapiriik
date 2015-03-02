@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 #
 # Full scope needed so that we can read files that user adds by hand
 _OAUTH_SCOPES = [
+    "https://www.googleapis.com/auth/userinfo.profile",
     "https://www.googleapis.com/auth/fitness.activity.read",
     "https://www.googleapis.com/auth/fitness.activity.write",
     "https://www.googleapis.com/auth/fitness.body.read",  # for HR data
@@ -35,6 +36,7 @@ _OAUTH_SCOPES = [
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/auth"
 GOOGLE_TOKEN_URL = "https://accounts.google.com/o/oauth2/token"
 GOOGLE_REVOKE_URL = "https://accounts.google.com/o/oauth2/revoke"
+GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
 
 API_BASE_URL = "https://www.googleapis.com/fitness/v1/users/me/"
 
@@ -106,8 +108,9 @@ class GoogleFitService(ServiceBase):
 
     def RetrieveAuthorizationToken(self, req, level):
         def fetchUid(tokenData):
-            # TODO: decide on a good UID
-            return tokenData["refresh_token"]
+            access_token = tokenData["access_token"]
+            uid_res = self._oaClient.get(None, GOOGLE_USERINFO_URL, access_token=access_token)
+            return uid_res.json()["id"]
 
         return self._oaClient.retrieveAuthorizationToken(self, req, WEB_ROOT + reverse("oauth_return", kwargs={"service": self.ID}), fetchUid)
 
