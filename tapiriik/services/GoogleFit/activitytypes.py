@@ -1,4 +1,4 @@
-from tapiriik.service.interchange import ActivityType
+from tapiriik.services.interchange import ActivityType
 
 # Activity types from:
 # https://developers.google.com/fit/rest/v1/reference/activity-types
