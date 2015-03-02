@@ -1,1 +1,1 @@
-from .googlefit import *
+from .googlefit import GoogleFitService

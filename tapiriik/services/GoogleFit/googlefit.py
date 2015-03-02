@@ -1,6 +1,5 @@
 from tapiriik.settings import WEB_ROOT, GOOGLEDRIVE_CLIENT_ID, GOOGLEDRIVE_CLIENT_SECRET
-from tapiriik.services.service_base import ServiceAuthenticationType
-from tapiriik.services.storage_service_base import StorageServiceBase
+from tapiriik.services.service_base import ServiceAuthenticationType, ServiceBase
 from tapiriik.services.service_record import ServiceRecord
 from tapiriik.services.oauth2 import OAuth2Client
 from tapiriik.services.interchange import UploadedActivity, Waypoint, WaypointType, Location, Lap
@@ -28,6 +27,8 @@ logger = logging.getLogger(__name__)
 _OAUTH_SCOPES = [
     "https://www.googleapis.com/auth/fitness.activity.read",
     "https://www.googleapis.com/auth/fitness.activity.write",
+    "https://www.googleapis.com/auth/fitness.body.read",  # for HR data
+    "https://www.googleapis.com/auth/fitness.body.write",
     "https://www.googleapis.com/auth/fitness.location.read",
     "https://www.googleapis.com/auth/fitness.location.write"]
 
@@ -37,39 +38,56 @@ GOOGLE_REVOKE_URL = "https://accounts.google.com/o/oauth2/revoke"
 
 API_BASE_URL = "https://www.googleapis.com/fitness/v1/users/me/"
 
+POST_HEADER = {"Content-type": "application/json"}
+
+
+def _floatField(name):
+    # Description for field when creating source.
+    return {"name": name, "format": "floatPoint"}
+
 # See https://developers.google.com/fit/rest/v1/data-types
-SUPPORTED_DATATYPES = [
-    # "com.google.activity.sample",
-    # "com.google.activity.segment", # TODO: should support this as Lap?
-    "com.google.calories.expended",  # I presume calories.consumed actually means "ingested", otherwise it's the same thing??
-    "com.google.cycling.pedaling.cadence",
-    "com.google.distance.delta",
-    "com.google.heart_rate.bpm",
-    "com.google.location.sample",
-    "com.google.power.sample",
-    "com.google.speed",
-    "com.google.step_count.cadence",
-    # "com.google.step_count.delta", # TODO: would be nice to support this?
-]
+# We have to include the description when creating sources, for reasons.
+SUPPORTED_DATATYPES = {
+    # "com.google.activity.sample" : [...],
+    # "com.google.activity.segment": [...], # TODO: should support this as Lap?
+    "com.google.location.sample": [_floatField("latitude"), _floatField("longitude"), _floatField("accuracy"), _floatField("altitude")],
+    "com.google.heart_rate.bpm": [_floatField("bpm")],
+    "com.google.calories.expended": [_floatField("calories")],  # I presume calories.consumed actually means "ingested", otherwise it's the same thing??
+    "com.google.cycling.pedaling.cadence": [_floatField("rpm")],
+    "com.google.step_count.cadence": [_floatField("rpm")],
+    "com.google.distance.delta": [_floatField("distance")],
+    "com.google.power.sample": [_floatField("watts")],
+    "com.google.speed": [_floatField("speed")],
+    # "com.google.step_count.delta": [...], # TODO: would be nice to support this?
+}
 
 APP_NAME = "com.tapiriik.sync"
 
 
 def _fpVal(f):
-    return {'fpVal': f}
+    return {"fpVal": f}
 
-class GoogleFitService(StorageServiceBase):
+
+def _sourceAppName(source):
+    return source["application"].get("name") or source["application"].get("packageName")
+
+
+class GoogleFitService(ServiceBase):
     ID = "googlefit"
     DisplayName = "Google Fit"
     DisplayAbbreviation = "GF"
     AuthenticationType = ServiceAuthenticationType.OAuth
     Configurable = True
-    ReceivesStationaryActivities = False
+    ReceivesStationaryActivities = True
     AuthenticationNoFrame = True
     SupportsHR = SupportsCalories = SupportsCadence = SupportsPower = True
     SupportsTemp = False  # could created a custom data type, but not supported by default..
     SupportedActivities = atype_to_googlefit.keys()
     GlobalRateLimits = [(timedelta(days=1), 86400)]
+
+    # FIXME: just while testing, ignore retry counts.
+    UploadRetryCount = 5000
+    DownloadRetryCount = 5000
 
     _oaClient = OAuth2Client(GOOGLEDRIVE_CLIENT_ID, GOOGLEDRIVE_CLIENT_SECRET, GOOGLE_TOKEN_URL, tokenTimeoutMin=55)
 
@@ -79,7 +97,7 @@ class GoogleFitService(StorageServiceBase):
 
     def GenerateUserAuthorizationURL(self, level=None):
         return_url = WEB_ROOT + reverse("oauth_return", kwargs={"service": self.ID})
-        params = {"redirect_uri": return_url, "response_type": "code", "access_type": "offline", "client_id": GOOGLEDRIVE_CLIENT_ID, "scope": ' '.join(_OAUTH_SCOPES)}
+        params = {"redirect_uri": return_url, "response_type": "code", "access_type": "offline", "client_id": GOOGLEDRIVE_CLIENT_ID, "scope": " ".join(_OAUTH_SCOPES)}
         return requests.Request(url=GOOGLE_AUTH_URL, params=params).prepare().url
 
     def RetrieveAuthorizationToken(self, req, level):
@@ -87,7 +105,7 @@ class GoogleFitService(StorageServiceBase):
             # TODO: decide on a good UID
             return tokenData["refresh_token"]
 
-        return self._oaClient.retrieveAuthorizationToken(self, req, WEB_ROOT + reverse("oauth_return", kwargs={"service": "sporttracks"}), fetchUid)
+        return self._oaClient.retrieveAuthorizationToken(self, req, WEB_ROOT + reverse("oauth_return", kwargs={"service": self.ID}), fetchUid)
 
     def RevokeAuthorization(self, serviceRec):
         self._oaClient.revokeAuthorization(serviceRec, GOOGLE_REVOKE_URL)
@@ -119,7 +137,7 @@ class GoogleFitService(StorageServiceBase):
 
             for s in slist:
                 act = UploadedActivity()
-                if 'application' not in s:
+                if "application" not in s:
                     continue
                 act.StartTime = pytz.utc.localize(datetime.utcfromtimestamp(float(s["startTimeMillis"])/1000))
                 act.EndTime = pytz.utc.localize(datetime.utcfromtimestamp(float(s["endTimeMillis"])/1000))
@@ -128,11 +146,12 @@ class GoogleFitService(StorageServiceBase):
                 act.TZ = pytz.UTC
                 act.Notes = s.get("description")
                 act.Name = s.get("name")
-                act.ServiceData = {'Id': s.get('id')}
-                appdata = s['application']
-                act.ServiceData['ApplicationPackage'] = appdata.get('packageName')
-                act.ServiceData['ApplicationVersion'] = appdata.get('version')
-                act.ServiceData['ApplicationName'] = appdata.get('name')
+                act.ServiceData = {"Id": s.get("id")}
+                appdata = s["application"]
+                act.ServiceData["ApplicationPackage"] = appdata.get("packageName")
+                act.ServiceData["ApplicationVersion"] = appdata.get("version")
+                act.ServiceData["ApplicationName"] = appdata.get("name")
+                act.CalculateUID()
                 activities.append(act)
 
             page_token = session_list.get("nextPageToken")
@@ -143,37 +162,41 @@ class GoogleFitService(StorageServiceBase):
 
     def _getDataSources(self, serviceRecord, session, forceRefresh=False):
         datasource_url = API_BASE_URL + "dataSources"
-        raw_sources = None
+        sources = None
         if not forceRefresh:
-            raw_sources = cachedb.googlefit_source_cache.find_one({"ExternalID": serviceRecord.ExternalID})
+            sources = cachedb.googlefit_source_cache.find_one({"ExternalID": serviceRecord.ExternalID})
 
-        if not raw_sources:
-            raw_sources = session.get(datasource_url, param={'dataTypeName': SUPPORTED_DATATYPES}).text
-            cachedb.googlefit_source_cache.update({"ExternalID": serviceRecord.ExternalID}, raw_sources)
+        if sources is None:
+            sources = session.get(datasource_url, params={"dataTypeName": list(SUPPORTED_DATATYPES.keys())}).json()
+            if "dataSource" not in sources:
+                sources = {"dataSource": []}
+            logger.debug("got %d sources from google fit." % len(sources["dataSource"]))
+            cachedb.googlefit_source_cache.update({"ExternalID": serviceRecord.ExternalID}, sources)
 
-        return json.loads(raw_sources).get("dataSource")
+        return sources["dataSource"]
 
-    def _toUTCNano(ts):
+    def _toUTCNano(self, ts):
         return calendar.timegm(ts.utctimetuple()) * int(1e9)
 
-    def _toUTCMilli(ts):
+    def _toUTCMilli(self, ts):
         return calendar.timegm(ts.utctimetuple()) * int(1e3)
 
     def DownloadActivity(self, serviceRecord, activity):
         session = self._oaClient.session(serviceRecord)
         # If it  came from DownloadActivityList it will have this..
-        assert 'ApplicationPackage' in activity.ServiceData
+        assert "ApplicationPackage" in activity.ServiceData
         dataset_url = API_BASE_URL + "dataSources/%s/datasets/%d-%d"
 
         start_nano = self._toUTCNano(activity.StartTime)
         end_nano = self._toUTCNano(activity.EndTime)
 
         # Grab the streams from the same app as this session:
-        sources = self._getDataSources(serviceRecord)
-        sources = filter(sources, lambda x: x['application']['packageName'] == activity.ServiceData['ApplicationPackage'], sources)
+        sources = self._getDataSources(serviceRecord, session)
+        sources = filter(lambda x: _sourceAppName(x) == activity.ServiceData["ApplicationPackage"], sources)
 
         # Combine the data for each point from each stream.
         waypoints = {}
+        hasLoc = False
         for source in sources:
             streamid = source["dataStreamId"]
             #sourcedatatype = source["dataType"]["name"]
@@ -187,7 +210,7 @@ class GoogleFitService(StorageServiceBase):
             except:
                 raise APIException("JSON parse error")
 
-            points = data.get('point')
+            points = data.get("point")
             if not points:
                 continue
 
@@ -205,6 +228,7 @@ class GoogleFitService(StorageServiceBase):
                     wp.Location.Longitude = values[1]["fpVal"]
                     # values[2] is accuracy
                     wp.Location.Altitude = values[3]["fpVal"]
+                    hasLoc = True
                 elif pointType == "com.google.heart_rate.bpm":
                     wp.HR = values[0]["fpVal"]
                 elif pointType == "com.google.calories.expended":
@@ -227,35 +251,43 @@ class GoogleFitService(StorageServiceBase):
                     logging.info("Unexpected point data type %s.." % pointType)
 
         # Sort all points by time
-        wpkeys = waypoints.keys()
-        wpkeys.start()
+        wpkeys = list(waypoints.keys())
+        wpkeys.sort()
         lap = Lap(startTime=activity.StartTime, endTime=activity.EndTime)  # no laps in google fit.. just make one.
         activity.Laps = [lap]
         lap.Waypoints = [waypoints[x] for x in wpkeys]
-        # A bit approximate..
-        lap.Waypoints[0].Type = WaypointType.Start
-        lap.Waypoints[-1].Type = WaypointType.End
+        if len(lap.Waypoints):
+            # A bit approximate..
+            lap.Waypoints[0].Type = WaypointType.Start
+            lap.Waypoints[-1].Type = WaypointType.End
 
+        activity.GPS = hasLoc
+        activity.Stationary = activity.CountTotalWaypoints() <= 1
         return activity
 
     def _ensureSourcesExist(self, serviceRecord, session, sources):
         datasource_url = API_BASE_URL + "dataSources"
 
-        tap_sources = filter(lambda x: x["application"].get("name") == APP_NAME, sources)
+        tap_sources = [x for x in sources if _sourceAppName(x) == APP_NAME]
+        logger.debug("%d tapiriik sources already at google fit" % len(tap_sources))
         added = False
 
         for tname in SUPPORTED_DATATYPES:
-            if len(filter(lambda x: x["dataType"]["name"] == SUPPORTED_DATATYPES), tap_sources):
+            if [x for x in tap_sources if x["dataType"]["name"] == tname]:
                 continue
-            # Source doesn't exist.. create it
             description = {
-                "application": {"name": APP_NAME},
-                # TODO: do I really have to describe the fields for the default types?
-                "dataType": {"name": tname},
+                "name": "tapiriik-%s" % tname.replace(".", "-"),
+                "application": {"name": APP_NAME, "detailsUrl": WEB_ROOT},
+                # Why do I have to tell Google what fields their data types have?
+                "dataType": {"name": tname, "field": SUPPORTED_DATATYPES[tname]},
                 "type": "raw",
             }
-            response = session.post(datasource_url, data=description)
+            response = session.post(datasource_url, data=json.dumps(description), headers=POST_HEADER)
+            logger.debug("create %s source at google fit: response %d." % (tname, response.status_code))
 
+            if response.status_code != 200:
+                import pdb; pdb.set_trace()
+                raise APIException("Error %d creating google fit source: %s" % (response.status_code, response.text))
             newdesc = response.json()
             sources.append(newdesc)
             added = True
@@ -266,9 +298,9 @@ class GoogleFitService(StorageServiceBase):
 
     def UploadActivity(self, serviceRecord, activity):
         session = self._oaClient.session(serviceRecord)
-        session_url = API_BASE_URL + "sessions"
-        sources = self._getDataSources(serviceRecord)
-        sources = self._ensureSourcesExist(session, sources)
+        session_url = API_BASE_URL + "sessions/%s"
+        sources = self._getDataSources(serviceRecord, session)
+        sources = self._ensureSourcesExist(serviceRecord, session, sources)
 
         # Create a session representing this activity
         startms = self._toUTCMilli(activity.StartTime)
@@ -276,17 +308,21 @@ class GoogleFitService(StorageServiceBase):
         modms = self._toUTCMilli(datetime.now())  # TODO: Is this ok?
         sess_data = {
             "id": str(startms),
-            "name": activity.Name,
-            "description": activity.Notes,
+            "name": activity.Name or activity.Type,
+            "description": activity.Notes or "",
             "startTimeMillis": startms,
             "endTimeMillis": endms,
             "modifiedTimeMillis": modms,
             "application": {"name": APP_NAME},
             "activityType": atype_to_googlefit[activity.Type]
         }
-        result = session.put(session_url, data=sess_data)
+        response = session.put(session_url % str(startms), data=json.dumps(sess_data), headers=POST_HEADER)
         # TODO: should check this matches what we put in.
-        outr = result.json()
+        logging.debug("upload activity to %s: %d" % (session_url, response.status_code))
+        if response.status_code != 200:
+            import pdb; pdb.set_trace()
+            raise APIException("Error %d creating google fit session: %s" % (response.status_code, response.text))
+        outr = response.json()
 
         # Split the activity into data streams, as we have to upload each one individually
         locs = []
@@ -333,7 +369,7 @@ class GoogleFitService(StorageServiceBase):
         for points, tname in data_types:
             if not points:
                 continue
-            s = filter(lambda x: x["application"].get("name") == APP_NAME and x["dataType"]["name"] == tname, sources)
+            s = [x for x in sources if x["application"].get("name") == APP_NAME and x["dataType"]["name"] == tname]
             if not s or "dataStreamId" not in s[0]:
                 raise APIException("Data source not created correctly!")
             streamId = s[0]["dataStreamId"]
@@ -343,9 +379,13 @@ class GoogleFitService(StorageServiceBase):
             point_list = [make_point(x) for x in points]
 
             put_data = {"dataSourceId": streamId, "minStartTimeNs": points[0][0], "maxEndTimeNs": points[-1][0], "point": point_list}
-            result = session.patch(dataset_url % (streamId, points[0][0], points[-1][0]), data=put_data)
+            response = session.patch(dataset_url % (streamId, points[0][0], points[-1][0]), data=json.dumps(put_data), headers=POST_HEADER)
 
-            result_json = result.json()
-            # TODO: check the return value.
+            if response.status_code != 200:
+                import pdb; pdb.set_trace()
+                raise APIException("Error %d adding points to google fit stream: %s" % (response.status_code, response.text))
+
+            # TODO: check the contents of response.
+            result_json = response.json()
 
         return str(startms)
