@@ -24,6 +24,8 @@ from tapiriik.services.VeloHero import VeloHeroService
 VeloHero = VeloHeroService()
 from tapiriik.services.TrainerRoad import TrainerRoadService
 TrainerRoad = TrainerRoadService()
+from tapiriik.services.GoogleFit import GoogleFitService
+GoogleFit = GoogleFitService()
 
 PRIVATE_SERVICES = []
 try:
