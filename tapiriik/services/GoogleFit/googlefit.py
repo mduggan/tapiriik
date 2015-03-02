@@ -155,6 +155,7 @@ class GoogleFitService(ServiceBase):
                 act.ServiceData["ApplicationVersion"] = appdata.get("version")
                 act.ServiceData["ApplicationName"] = appdata.get("name")
                 act.CalculateUID()
+                #logger.debug("google fit activity UID %s" % act.UID)
                 activities.append(act)
 
             page_token = session_list.get("nextPageToken")
@@ -173,7 +174,7 @@ class GoogleFitService(ServiceBase):
             sources = session.get(datasource_url, params={"dataTypeName": list(SUPPORTED_DATATYPES.keys())}).json()
             if "dataSource" not in sources:
                 sources = {"dataSource": []}
-            logger.debug("got %d sources from google fit." % len(sources["dataSource"]))
+            #logger.debug("got %d sources from google fit." % len(sources["dataSource"]))
             cachedb.googlefit_source_cache.update({"ExternalID": serviceRecord.ExternalID}, sources)
 
         return sources["dataSource"]
@@ -208,7 +209,7 @@ class GoogleFitService(ServiceBase):
         for source in sources:
             streamid = source["dataStreamId"]
             # sourcedatatype = source["dataType"]["name"]
-            logger.debug("fetch data for stream %s" % streamid)
+            #logger.debug("fetch data for stream %s" % streamid)
             source_url = dataset_url % (streamid, start_nano, end_nano)
 
             data = session.get(source_url)
@@ -276,7 +277,7 @@ class GoogleFitService(ServiceBase):
         datasource_url = API_BASE_URL + "dataSources"
 
         tap_sources = [x for x in sources if _sourceAppName(x) == APP_NAME]
-        logger.debug("%d tapiriik sources already at google fit" % len(tap_sources))
+        #logger.debug("%d tapiriik sources already at google fit" % len(tap_sources))
         added = False
 
         for tname in SUPPORTED_DATATYPES:
@@ -322,7 +323,7 @@ class GoogleFitService(ServiceBase):
             "activityType": atype_to_googlefit[activity.Type]
         }
         response = session.put(session_url % str(startms), data=json.dumps(sess_data), headers=POST_HEADER)
-        logger.debug("upload activity to %s: %d" % (session_url, response.status_code))
+        logger.debug("create session %s: %d" % (session_url % str(startms), response.status_code))
         if response.status_code != 200:
             raise APIException("Error %d creating google fit session: %s" % (response.status_code, response.text))
         try:
@@ -381,6 +382,8 @@ class GoogleFitService(ServiceBase):
             if not s or "dataStreamId" not in s[0]:
                 raise APIException("Data source for %s not created correctly!" % tname)
             streamId = s[0]["dataStreamId"]
+
+            #logger.debug("Upload %d points for %s to %s" % (len(points), tname, dataset_url % (streamId, points[0][0], points[-1][0])))
 
             def make_point(x):
                 return {"dataTypeName": tname, "startTimeNanos": x[0], "endTimeNanos": x[0], "value": x[1]}
