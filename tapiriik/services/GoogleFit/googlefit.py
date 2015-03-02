@@ -1,4 +1,4 @@
-from tapiriik.settings import WEB_ROOT, GOOGLEDRIVE_CLIENT_ID, GOOGLEDRIVE_CLIENT_SECRET
+from tapiriik.settings import WEB_ROOT, GOOGLEFIT_CLIENT_ID, GOOGLEFIT_CLIENT_SECRET
 from tapiriik.services.service_base import ServiceAuthenticationType, ServiceBase
 from tapiriik.services.service_record import ServiceRecord
 from tapiriik.services.oauth2 import OAuth2Client
@@ -49,7 +49,7 @@ def _floatField(name):
 # We have to include the description when creating sources, for reasons.
 SUPPORTED_DATATYPES = {
     # "com.google.activity.sample" : [...],
-    # "com.google.activity.segment": [...], # TODO: should support this as Lap?
+    # "com.google.activity.segment": [...], # TODO: would be nice to support this as Lap?
     "com.google.location.sample": [_floatField("latitude"), _floatField("longitude"), _floatField("accuracy"), _floatField("altitude")],
     "com.google.heart_rate.bpm": [_floatField("bpm")],
     "com.google.calories.expended": [_floatField("calories")],  # I presume calories.consumed actually means "ingested", otherwise it's the same thing??
@@ -69,7 +69,11 @@ def _fpVal(f):
 
 
 def _sourceAppName(source):
-    return source["application"].get("name") or source["application"].get("packageName")
+    name = None
+    app = source.get("application")
+    if app:
+        name = app.get("name") or app.get("packageName")
+    return name
 
 
 class GoogleFitService(ServiceBase):
@@ -89,7 +93,7 @@ class GoogleFitService(ServiceBase):
     UploadRetryCount = 5000
     DownloadRetryCount = 5000
 
-    _oaClient = OAuth2Client(GOOGLEDRIVE_CLIENT_ID, GOOGLEDRIVE_CLIENT_SECRET, GOOGLE_TOKEN_URL, tokenTimeoutMin=55)
+    _oaClient = OAuth2Client(GOOGLEFIT_CLIENT_ID, GOOGLEFIT_CLIENT_SECRET, GOOGLE_TOKEN_URL, tokenTimeoutMin=55)
 
     def WebInit(self):
         self.UserAuthorizationURL = WEB_ROOT + reverse("oauth_redirect", kwargs={"service": self.ID})
@@ -97,7 +101,7 @@ class GoogleFitService(ServiceBase):
 
     def GenerateUserAuthorizationURL(self, level=None):
         return_url = WEB_ROOT + reverse("oauth_return", kwargs={"service": self.ID})
-        params = {"redirect_uri": return_url, "response_type": "code", "access_type": "offline", "client_id": GOOGLEDRIVE_CLIENT_ID, "scope": " ".join(_OAUTH_SCOPES)}
+        params = {"redirect_uri": return_url, "response_type": "code", "access_type": "offline", "client_id": GOOGLEFIT_CLIENT_ID, "scope": " ".join(_OAUTH_SCOPES)}
         return requests.Request(url=GOOGLE_AUTH_URL, params=params).prepare().url
 
     def RetrieveAuthorizationToken(self, req, level):
@@ -120,7 +124,6 @@ class GoogleFitService(ServiceBase):
         excluded = []
 
         sources = self._getDataSources(serviceRecord, session, forceRefresh=True)
-
         if not sources:
             # No sources of interest, don't bother listing sessions (save an API call)
             return activities, excluded
@@ -132,7 +135,7 @@ class GoogleFitService(ServiceBase):
                 params["pageToken"] = page_token
             session_list = session.get(session_list_url, params=params).json()
             slist = session_list.get("session")
-            if not session:
+            if not slist:
                 break
 
             for s in slist:
@@ -142,10 +145,10 @@ class GoogleFitService(ServiceBase):
                 act.StartTime = pytz.utc.localize(datetime.utcfromtimestamp(float(s["startTimeMillis"])/1000))
                 act.EndTime = pytz.utc.localize(datetime.utcfromtimestamp(float(s["endTimeMillis"])/1000))
                 act.Type = googlefit_to_atype[s["activityType"]]
-                # FIXME; this is not really right..
+                # FIXME; this is not really right, but google fit doesn't support timezones.  at least all timestamps are UTC.
                 act.TZ = pytz.UTC
-                act.Notes = s.get("description")
-                act.Name = s.get("name")
+                act.Notes = s.get("description") or None
+                act.Name = s.get("name") or None
                 act.ServiceData = {"Id": s.get("id")}
                 appdata = s["application"]
                 act.ServiceData["ApplicationPackage"] = appdata.get("packageName")
@@ -183,23 +186,28 @@ class GoogleFitService(ServiceBase):
 
     def DownloadActivity(self, serviceRecord, activity):
         session = self._oaClient.session(serviceRecord)
-        # If it  came from DownloadActivityList it will have this..
+        # If it came from DownloadActivityList it will have this..
         assert "ApplicationPackage" in activity.ServiceData
         dataset_url = API_BASE_URL + "dataSources/%s/datasets/%d-%d"
 
+        # Pad the end time to make sure we get all the data
         start_nano = self._toUTCNano(activity.StartTime)
-        end_nano = self._toUTCNano(activity.EndTime)
+        end_nano = self._toUTCNano(activity.EndTime + timedelta(seconds=1))
 
         # Grab the streams from the same app as this session:
         sources = self._getDataSources(serviceRecord, session)
-        sources = filter(lambda x: _sourceAppName(x) == activity.ServiceData["ApplicationPackage"], sources)
+        sources = [x for x in sources if _sourceAppName(x) == activity.ServiceData["ApplicationPackage"]]
+        # Sort the sources do that derived data comes first, raw data comes
+        # second.  If we have both for the same waypoint then we want to
+        # overwrite the derived with the raw.
+        sources.sort(key=lambda x: x["dataStreamId"])
 
         # Combine the data for each point from each stream.
         waypoints = {}
         hasLoc = False
         for source in sources:
             streamid = source["dataStreamId"]
-            #sourcedatatype = source["dataType"]["name"]
+            # sourcedatatype = source["dataType"]["name"]
             logger.debug("fetch data for stream %s" % streamid)
             source_url = dataset_url % (streamid, start_nano, end_nano)
 
@@ -216,10 +224,10 @@ class GoogleFitService(ServiceBase):
 
             for point in points:
                 pointType = point["dataTypeName"]
-                startms = int(point["startTimeNanos"] / 1000000)
+                startms = int(float(point["startTimeNanos"]) / 1000000)
                 wp = waypoints.get(startms)
                 if wp is None:
-                    wp = waypoints[startms] = Waypoint(datetime.utcfromtimestamp(startms))
+                    wp = waypoints[startms] = Waypoint(pytz.utc.localize(datetime.utcfromtimestamp(startms/1000.0)))
 
                 values = point["value"]
                 if pointType == "com.google.location.sample":
@@ -243,12 +251,11 @@ class GoogleFitService(ServiceBase):
                     wp.Distance = values[0]["fpVal"]
                 elif pointType == "com.google.power.sample":
                     wp.Power = values[0]["fpVal"]
-                elif pointType == "com.google.step_count.delta":
-                    # TODO: use this data
-                    # steps = values[0]["intVal"]
-                    logging.debug("Step count delta (not supported..)")
+                # elif pointType == "com.google.step_count.delta":
+                #   # steps = values[0]["intVal"]
+                #   wp.RunCadence = ...
                 else:
-                    logging.info("Unexpected point data type %s.." % pointType)
+                    logger.info("Unexpected point data type %s.." % pointType)
 
         # Sort all points by time
         wpkeys = list(waypoints.keys())
@@ -286,14 +293,12 @@ class GoogleFitService(ServiceBase):
             logger.debug("create %s source at google fit: response %d." % (tname, response.status_code))
 
             if response.status_code != 200:
-                import pdb; pdb.set_trace()
                 raise APIException("Error %d creating google fit source: %s" % (response.status_code, response.text))
             newdesc = response.json()
             sources.append(newdesc)
             added = True
         if added:
-            raw_sources = json.dumps(sources)
-            cachedb.googlefit_source_cache.update({"ExternalID": serviceRecord.ExternalID}, raw_sources)
+            cachedb.googlefit_source_cache.update({"ExternalID": serviceRecord.ExternalID}, {"dataSource": sources})
         return sources
 
     def UploadActivity(self, serviceRecord, activity):
@@ -305,7 +310,7 @@ class GoogleFitService(ServiceBase):
         # Create a session representing this activity
         startms = self._toUTCMilli(activity.StartTime)
         endms = self._toUTCMilli(activity.EndTime)
-        modms = self._toUTCMilli(datetime.now())  # TODO: Is this ok?
+        modms = self._toUTCMilli(datetime.now())  # hmm.. Is this ok?
         sess_data = {
             "id": str(startms),
             "name": activity.Name or activity.Type,
@@ -317,12 +322,14 @@ class GoogleFitService(ServiceBase):
             "activityType": atype_to_googlefit[activity.Type]
         }
         response = session.put(session_url % str(startms), data=json.dumps(sess_data), headers=POST_HEADER)
-        # TODO: should check this matches what we put in.
-        logging.debug("upload activity to %s: %d" % (session_url, response.status_code))
+        logger.debug("upload activity to %s: %d" % (session_url, response.status_code))
         if response.status_code != 200:
-            import pdb; pdb.set_trace()
             raise APIException("Error %d creating google fit session: %s" % (response.status_code, response.text))
-        outr = response.json()
+        try:
+            # TODO: check this matches what we put in.
+            response.json()
+        except:
+            raise APIException("Response to creating google fit session not json: %s" % (response.text,))
 
         # Split the activity into data streams, as we have to upload each one individually
         locs = []
@@ -338,22 +345,22 @@ class GoogleFitService(ServiceBase):
             for wp in lap.Waypoints:
                 wp_nanos = self._toUTCNano(wp.Timestamp)
                 if wp.Location is not None:
-                    # TODO: Just put in 1m accuracy here.. what else to do?
+                    # Just put in 1m accuracy here since they wanted something.. what else to do?
                     locs.append((wp_nanos, [_fpVal(wp.Location.Latitude), _fpVal(wp.Location.Longitude), _fpVal(1), _fpVal(wp.Location.Altitude)]))
                 if wp.HR is not None:
-                    hr.append(wp_nanos, [_fpVal(wp.HR)])
+                    hr.append((wp_nanos, [_fpVal(wp.HR)]))
                 if wp.Calories is not None:
-                    cals.append(wp_nanos, [_fpVal(wp.Calories)])
+                    cals.append((wp_nanos, [_fpVal(wp.Calories)]))
                 if wp.Cadence is not None:
-                    cadence.append(wp_nanos, [_fpVal(wp.Cadence)])
+                    cadence.append((wp_nanos, [_fpVal(wp.Cadence)]))
                 if wp.RunCadence is not None:
-                    runcad.append(wp_nanos, [_fpVal(wp.RunCadence)])
+                    runcad.append((wp_nanos, [_fpVal(wp.RunCadence)]))
                 if wp.Speed is not None:
-                    speed.append(wp_nanos, [_fpVal(wp.RunCadence)])
+                    speed.append((wp_nanos, [_fpVal(wp.RunCadence)]))
                 if wp.Distance is not None:
-                    dist.append(wp_nanos, [_fpVal(wp.Distance)])
+                    dist.append((wp_nanos, [_fpVal(wp.Distance)]))
                 if wp.Power is not None:
-                    power.append(wp_nanos, [_fpVal(wp.Power)])
+                    power.append((wp_nanos, [_fpVal(wp.Power)]))
 
         dataset_url = API_BASE_URL + "dataSources/%s/datasets/%d-%d"
         data_types = [
@@ -366,26 +373,29 @@ class GoogleFitService(ServiceBase):
             (dist, "com.google.distance.delta"),
             (power, "com.google.power.sample"), ]
 
+        # Upload each stream that we have data for
         for points, tname in data_types:
             if not points:
                 continue
-            s = [x for x in sources if x["application"].get("name") == APP_NAME and x["dataType"]["name"] == tname]
+            s = [x for x in sources if _sourceAppName(x) == APP_NAME and x["dataType"]["name"] == tname]
             if not s or "dataStreamId" not in s[0]:
-                raise APIException("Data source not created correctly!")
+                raise APIException("Data source for %s not created correctly!" % tname)
             streamId = s[0]["dataStreamId"]
 
             def make_point(x):
-                return {"dataTypeName": tname, "startTimeNanos": x[0], "endTimeNanos": x[0], "value": x[1:]}
+                return {"dataTypeName": tname, "startTimeNanos": x[0], "endTimeNanos": x[0], "value": x[1]}
             point_list = [make_point(x) for x in points]
 
             put_data = {"dataSourceId": streamId, "minStartTimeNs": points[0][0], "maxEndTimeNs": points[-1][0], "point": point_list}
             response = session.patch(dataset_url % (streamId, points[0][0], points[-1][0]), data=json.dumps(put_data), headers=POST_HEADER)
 
             if response.status_code != 200:
-                import pdb; pdb.set_trace()
                 raise APIException("Error %d adding points to google fit stream: %s" % (response.status_code, response.text))
 
-            # TODO: check the contents of response.
-            result_json = response.json()
+            try:
+                # TODO: check this matches what we put in.
+                response.json()
+            except:
+                raise APIException("Response to adding google fit points not json: %s" % (response.text,))
 
         return str(startms)
