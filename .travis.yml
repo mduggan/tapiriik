@@ -1,6 +1,9 @@
 language: python
 python:
     - "3.3"
+services:
+    - mongodb
+    - redis-server
 install:
     - "pip install -r requirements.txt"
     - "cp tapiriik/local_settings.py.example tapiriik/local_settings.py"
