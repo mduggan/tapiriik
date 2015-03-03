@@ -115,10 +115,10 @@ class GarminConnectService(ServiceBase):
         cachedHierarchy = cachedb.gc_type_hierarchy.find_one()
         if not cachedHierarchy:
             rawHierarchy = requests.get("https://connect.garmin.com/modern/proxy/activity-service-1.2/json/activity_types", headers=self._obligatory_headers).text
-            self._activityHierarchy = json.loads(rawHierarchy)["dictionary"]
+            self._activityHierarchy = {} #json.loads(rawHierarchy)["dictionary"]
             cachedb.gc_type_hierarchy.insert({"Hierarchy": {}})
         else:
-            self._activityHierarchy = json.loads(cachedHierarchy["Hierarchy"])["dictionary"]
+            self._activityHierarchy = {} #json.loads(cachedHierarchy["Hierarchy"])["dictionary"]
         rate_lock_path = tempfile.gettempdir() + "/gc_rate.%s.lock" % HTTP_SOURCE_ADDR
         # Ensure the rate lock file exists (...the easy way)
         open(rate_lock_path, "a").close()
