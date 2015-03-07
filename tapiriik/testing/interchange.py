@@ -8,6 +8,7 @@ from tapiriik.services.interchange import Activity, ActivityType, Waypoint, Wayp
 from tapiriik.sync import Sync
 
 from datetime import datetime, timedelta
+import pytz
 import random
 
 
@@ -31,6 +32,7 @@ class InterchangeTests(TapiriikTestCase):
         rkSvc = Service.FromID("runkeeper")
         act = TestTools.create_random_activity(rkSvc, rkSvc.SupportedActivities[0])
         record = rkSvc._createUploadData(act)
+        record["has_path"] = act.GPS  # RK helpfully adds a "has_path" entry if we have waypoints.
         returnedAct = rkSvc._populateActivity(record)
         act.Name = None  # RK doesn't have a "name" field, so it's fudged into the notes, but not really
         rkSvc._populateActivityWaypoints(record, returnedAct)
@@ -42,86 +44,11 @@ class InterchangeTests(TapiriikTestCase):
         eSvc = Service.FromID("endomondo")
 
         act = TestTools.create_random_activity(eSvc, eSvc.SupportedActivities[0])
-        oldWaypoints = act.Waypoints
+        oldWaypoints = act.Laps[0].Waypoints
         self.assertEqual(oldWaypoints[0].Calories, None)
         record = eSvc._createUploadData(act)
         eSvc._populateActivityFromTrackData(act, record)
-        self.assertEqual(oldWaypoints, act.Waypoints)
-
-    def test_duration_calculation(self):
-        ''' ensures that true-duration calculation is being reasonable '''
-        act = TestTools.create_blank_activity()
-        act.StartTime = datetime.now()
-        act.EndTime = act.StartTime + timedelta(hours=3)
-
-        # No waypoints
-        self.assertRaises(ValueError, act.GetTimerTime)
-
-        # Too few waypoints
-        act.Waypoints = [Waypoint(timestamp=act.StartTime), Waypoint(timestamp=act.EndTime)]
-        self.assertRaises(ValueError, act.GetTimerTime)
-
-        # straight-up calculation
-        act.EndTime = act.StartTime + timedelta(seconds=14)
-        act.Waypoints = [Waypoint(timestamp=act.StartTime),
-                         Waypoint(timestamp=act.StartTime + timedelta(seconds=2)),
-                         Waypoint(timestamp=act.StartTime + timedelta(seconds=6)),
-                         Waypoint(timestamp=act.StartTime + timedelta(seconds=10)),
-                         Waypoint(timestamp=act.StartTime + timedelta(seconds=14))]
-        self.assertEqual(act.GetTimerTime(), timedelta(seconds=14))
-
-        # pauses
-        act.EndTime = act.StartTime + timedelta(seconds=14)
-        act.Waypoints = [Waypoint(timestamp=act.StartTime),
-                         Waypoint(timestamp=act.StartTime + timedelta(seconds=2)),
-                         Waypoint(timestamp=act.StartTime + timedelta(seconds=6), ptType=WaypointType.Pause),
-                         Waypoint(timestamp=act.StartTime + timedelta(seconds=9), ptType=WaypointType.Pause),
-                         Waypoint(timestamp=act.StartTime + timedelta(seconds=10), ptType=WaypointType.Resume),
-                         Waypoint(timestamp=act.StartTime + timedelta(seconds=14))]
-        self.assertEqual(act.GetTimerTime(), timedelta(seconds=10))
-
-        # laps - NO effect
-        act.EndTime = act.StartTime + timedelta(seconds=14)
-        act.Waypoints = [Waypoint(timestamp=act.StartTime),
-                         Waypoint(timestamp=act.StartTime + timedelta(seconds=2)),
-                         Waypoint(timestamp=act.StartTime + timedelta(seconds=6), ptType=WaypointType.Lap),
-                         Waypoint(timestamp=act.StartTime + timedelta(seconds=9)),
-                         Waypoint(timestamp=act.StartTime + timedelta(seconds=10), ptType=WaypointType.Lap),
-                         Waypoint(timestamp=act.StartTime + timedelta(seconds=14))]
-        self.assertEqual(act.GetTimerTime(), timedelta(seconds=14))
-
-        # multiple pauses + ending after pause
-        act.EndTime = act.StartTime + timedelta(seconds=20)
-        act.Waypoints = [Waypoint(timestamp=act.StartTime),
-                         Waypoint(timestamp=act.StartTime + timedelta(seconds=2)),
-                         Waypoint(timestamp=act.StartTime + timedelta(seconds=6), ptType=WaypointType.Pause),
-                         Waypoint(timestamp=act.StartTime + timedelta(seconds=9), ptType=WaypointType.Pause),
-                         Waypoint(timestamp=act.StartTime + timedelta(seconds=10), ptType=WaypointType.Resume),
-                         Waypoint(timestamp=act.StartTime + timedelta(seconds=12)),
-                         Waypoint(timestamp=act.StartTime + timedelta(seconds=16)),
-                         Waypoint(timestamp=act.StartTime + timedelta(seconds=17), ptType=WaypointType.Pause),
-                         Waypoint(timestamp=act.StartTime + timedelta(seconds=20), ptType=WaypointType.End)]
-        self.assertEqual(act.GetTimerTime(), timedelta(seconds=13))
-
-        # implicit pauses (>1m5s)
-        act.EndTime = act.StartTime + timedelta(seconds=20)
-        act.Waypoints = [Waypoint(timestamp=act.StartTime),
-                         Waypoint(timestamp=act.StartTime + timedelta(seconds=2)),
-                         Waypoint(timestamp=act.StartTime + timedelta(seconds=6)),
-                         Waypoint(timestamp=act.StartTime + timedelta(seconds=120)),
-                         Waypoint(timestamp=act.StartTime + timedelta(seconds=124)),
-                         Waypoint(timestamp=act.StartTime + timedelta(seconds=130))]
-        self.assertEqual(act.GetTimerTime(), timedelta(seconds=16))
-
-        # mixed pauses - would this ever happen?? Either way, the explicit pause should override the implicit one and cause otherwise-ignored time to be counted
-        act.EndTime = act.StartTime + timedelta(seconds=23)
-        act.Waypoints = [Waypoint(timestamp=act.StartTime),
-                         Waypoint(timestamp=act.StartTime + timedelta(seconds=2)),
-                         Waypoint(timestamp=act.StartTime + timedelta(seconds=6)),
-                         Waypoint(timestamp=act.StartTime + timedelta(seconds=20), ptType=WaypointType.Pause),
-                         Waypoint(timestamp=act.StartTime + timedelta(seconds=24), ptType=WaypointType.Resume),
-                         Waypoint(timestamp=act.StartTime + timedelta(seconds=30))]
-        self.assertEqual(act.GetTimerTime(), timedelta(seconds=26))
+        self.assertEqual(oldWaypoints, act.Laps[0].Waypoints)
 
     def test_activity_specificity_resolution(self):
         # Mountain biking is more specific than just cycling
