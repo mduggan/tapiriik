@@ -1,15 +1,9 @@
-from unittest import TestCase
-
 from tapiriik.testing.testtools import TestTools, TapiriikTestCase
 
-from tapiriik.sync import Sync
 from tapiriik.services import Service
-from tapiriik.services.interchange import Activity, ActivityType, Waypoint, WaypointType
-from tapiriik.sync import Sync
+from tapiriik.services.interchange import Activity, ActivityType
 
 from datetime import datetime, timedelta
-import pytz
-import random
 
 
 class InterchangeTests(TapiriikTestCase):
@@ -26,29 +20,33 @@ class InterchangeTests(TapiriikTestCase):
 
         self.assertEqual(actA.UID, actB.UID)
 
-    def test_constant_representation(self):
+    def test_constant_representation_rk(self):
         ''' ensures that all services' API clients are consistent through a simulated download->upload cycle '''
         #  runkeeper
         rkSvc = Service.FromID("runkeeper")
-        act = TestTools.create_random_activity(rkSvc, rkSvc.SupportedActivities[0])
+        act = TestTools.create_random_activity(rkSvc, rkSvc.SupportedActivities[0], withLaps=False)
         record = rkSvc._createUploadData(act)
         record["has_path"] = act.GPS  # RK helpfully adds a "has_path" entry if we have waypoints.
         returnedAct = rkSvc._populateActivity(record)
         act.Name = None  # RK doesn't have a "name" field, so it's fudged into the notes, but not really
         rkSvc._populateActivityWaypoints(record, returnedAct)
+        # RK deliberately doesn't set timezone..
+        returnedAct.EnsureTZ()
         self.assertActivitiesEqual(returnedAct, act)
 
         #  can't test Strava well this way, the upload and download formats are entirely different
 
-        #  endomondo - only waypoints at this point, the activity metadata is somewhat out-of-band
-        eSvc = Service.FromID("endomondo")
-
-        act = TestTools.create_random_activity(eSvc, eSvc.SupportedActivities[0])
-        oldWaypoints = act.Laps[0].Waypoints
-        self.assertEqual(oldWaypoints[0].Calories, None)
-        record = eSvc._createUploadData(act)
-        eSvc._populateActivityFromTrackData(act, record)
-        self.assertEqual(oldWaypoints, act.Laps[0].Waypoints)
+# FIXME: the _createUploadData function no longer exists..
+#    def test_constant_representation_en(self):
+#        #  endomondo - only waypoints at this point, the activity metadata is somewhat out-of-band
+#        eSvc = Service.FromID("endomondo")
+#
+#        act = TestTools.create_random_activity(eSvc, eSvc.SupportedActivities[0])
+#        oldWaypoints = act.Laps[0].Waypoints
+#        self.assertEqual(oldWaypoints[0].Calories, None)
+#        record = eSvc._createUploadData(act)
+#        eSvc._populateActivityFromTrackData(act, record)
+#        self.assertEqual(oldWaypoints, act.Laps[0].Waypoints)
 
     def test_activity_specificity_resolution(self):
         # Mountain biking is more specific than just cycling
