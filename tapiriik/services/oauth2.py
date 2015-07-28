@@ -14,7 +14,7 @@ class OAuth2Client():
     """
 
     def __init__(self, clientID, clientSecret, tokenUrl, tokenTimeoutMin=60, cacheName=None):
-        name = cacheName or self.ID
+        name = cacheName or clientID
         self._tokenCache = SessionCache(name, lifetime=timedelta(minutes=tokenTimeoutMin), freshen_on_get=False)
         self._tokenUrl = tokenUrl
         self._clientID = clientID
