@@ -13,8 +13,9 @@ class OAuth2Client():
     A simple helper you can add to a service to automatically refresh oauth2 tokens
     """
 
-    def __init__(self, clientID, clientSecret, tokenUrl, tokenTimeoutMin=60):
-        self._tokenCache = SessionCache(lifetime=timedelta(minutes=tokenTimeoutMin), freshen_on_get=False)
+    def __init__(self, clientID, clientSecret, tokenUrl, tokenTimeoutMin=60, cacheName=None):
+        name = cacheName or self.ID
+        self._tokenCache = SessionCache(name, lifetime=timedelta(minutes=tokenTimeoutMin), freshen_on_get=False)
         self._tokenUrl = tokenUrl
         self._clientID = clientID
         self._clientSecret = clientSecret

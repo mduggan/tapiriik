@@ -84,7 +84,7 @@ class GarminConnectService(ServiceBase):
 
     SupportsActivityDeletion = True
 
-    _sessionCache = SessionCache(lifetime=timedelta(minutes=30), freshen_on_get=True)
+    _sessionCache = SessionCache("garminconnect", lifetime=timedelta(minutes=120), freshen_on_get=True)
 
     _unitMap = {
         "mph": ActivityStatisticUnit.MilesPerHour,
@@ -114,7 +114,7 @@ class GarminConnectService(ServiceBase):
     def __init__(self):
         cachedHierarchy = cachedb.gc_type_hierarchy.find_one()
         if not cachedHierarchy:
-            rawHierarchy = requests.get("https://connect.garmin.com/modern/proxy/activity-service-1.2/json/activity_types", headers=self._obligatory_headers).text
+            rawHierarchy = requests.get("https://connect.garmin.com/proxy/activity-service-1.2/json/activity_types", headers=self._obligatory_headers).text
             self._activityHierarchy = json.loads(rawHierarchy)["dictionary"]
             cachedb.gc_type_hierarchy.insert({"Hierarchy": rawHierarchy})
         else:
@@ -149,6 +149,7 @@ class GarminConnectService(ServiceBase):
         from tapiriik.auth.credential_storage import CredentialStore
         cached = self._sessionCache.Get(record.ExternalID if record else email)
         if cached and not skip_cache:
+                logger.debug("Using cached credential")
                 return cached
         if record:
             #  longing for C style overloads...
@@ -195,7 +196,7 @@ class GarminConnectService(ServiceBase):
         data["lt"] = re.search("name=\"lt\"\s+value=\"([^\"]+)\"", preResp.text).groups(1)[0]
 
         ssoResp = session.post("https://sso.garmin.com/sso/login", params=params, data=data, allow_redirects=False)
-        if ssoResp.status_code != 200:
+        if ssoResp.status_code != 200 or "temporarily unavailable" in ssoResp.text:
             raise APIException("SSO error %s %s" % (ssoResp.status_code, ssoResp.text))
 
         ticket_match = re.search("ticket=([^']+)'", ssoResp.text)
@@ -220,7 +221,7 @@ class GarminConnectService(ServiceBase):
 
             if current_redirect_count >= expected_redirect_count and gcRedeemResp.status_code != 200:
                 raise APIException("GC redeem %d/%d error %s %s" % (current_redirect_count, expected_redirect_count, gcRedeemResp.status_code, gcRedeemResp.text))
-            if gcRedeemResp.status_code == 200:
+            if gcRedeemResp.status_code == 200 or gcRedeemResp.status_code == 404:
                 break
             current_redirect_count += 1
             if current_redirect_count > expected_redirect_count:
@@ -237,7 +238,7 @@ class GarminConnectService(ServiceBase):
 
     def Authorize(self, email, password):
         from tapiriik.auth.credential_storage import CredentialStore
-        session = self._get_session(email=email, password=password)
+        session = self._get_session(email=email, password=password, skip_cache=True)
         # TODO: http://connect.garmin.com/proxy/userprofile-service/socialProfile/ has the proper immutable user ID, not that anyone ever changes this one...
         self._rate_limit()
         username = session.get("http://connect.garmin.com/user/username").json()["username"]
@@ -273,7 +274,8 @@ class GarminConnectService(ServiceBase):
             while True:
                 res = session.get("https://connect.garmin.com/modern/proxy/activity-search-service-1.0/json/activities", params={"start": (page - 1) * pageSz, "limit": pageSz})
                 # It's 10 PM and I have no clue why it's throwing these errors, maybe we just need to log in again?
-                if res.status_code == 403 and not retried_auth:
+                if res.status_code in [500, 403] and not retried_auth:
+                    logger.debug("Retrying auth w/o cache")
                     retried_auth = True
                     session = self._get_session(serviceRecord, skip_cache=True)
                 else:
@@ -535,6 +537,9 @@ class GarminConnectService(ServiceBase):
         res = res.json()["detailedImportResult"]
 
         if len(res["successes"]) == 0:
+            if len(res["failures"]) and len(res["failures"][0]["messages"]) and res["failures"][0]["messages"][0]["content"] == "Duplicate activity":
+                logger.debug("Duplicate")
+                return # ...cool?
             raise APIException("Unable to upload activity %s" % res)
         if len(res["successes"]) > 1:
             raise APIException("Uploaded succeeded, resulting in too many activities")

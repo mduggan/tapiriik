@@ -7,6 +7,7 @@ from tapiriik.auth import TOTP, DiagnosticsUser, User
 from bson.objectid import ObjectId
 import hashlib
 import json
+import urllib.parse
 from datetime import datetime, timedelta
 
 def diag_requireAuth(view):
@@ -88,24 +89,24 @@ def diag_dashboard(req):
 @diag_requireAuth
 def diag_errors(req):
     context = {}
-    syncErrorListing = list(db.common_sync_errors.find().sort("value.count", -1))
-    syncErrorsAffectingServices = [service for error in syncErrorListing for service in error["value"]["connections"]]
-    syncErrorsAffectingUsers = list(db.users.find({"ConnectedServices.ID": {"$in": syncErrorsAffectingServices}}))
+    syncErrorListing = list(db.common_sync_errors.find({}, {"value.exemplar": 1, "value.count": 1, "value.recency_avg": 1, "_id.service": 1}).sort("value.count", -1))
     syncErrorSummary = []
-    autoSyncErrorSummary = []
-    for error in syncErrorListing:
-        serviceSet = set(error["value"]["connections"])
-        affected_auto_users = [{"id": user["_id"], "highlight": "LastSynchronization" in user and user["LastSynchronization"] > datetime.utcnow() - timedelta(minutes=5), "outdated": user["LastSynchronizationVersion"] != SITE_VER if "LastSynchronizationVersion" in user else True} for user in syncErrorsAffectingUsers if set([conn["ID"] for conn in user["ConnectedServices"]]) & serviceSet and "NextSynchronization" in user and user["NextSynchronization"] is not None]
-        affected_users = [{"id": user["_id"], "highlight": False, "outdated": False} for user in syncErrorsAffectingUsers if set([conn["ID"] for conn in user["ConnectedServices"]]) & serviceSet and ("NextSynchronization" not in user or user["NextSynchronization"] is None)]
-        if len(affected_auto_users):
-            autoSyncErrorSummary.append({"service": error["_id"]["service"], "message": error["value"]["exemplar"], "count": int(error["value"]["count"]), "affected_users": affected_auto_users})
-        if len(affected_users):
-            syncErrorSummary.append({"service": error["_id"]["service"], "message": error["value"]["exemplar"], "count": int(error["value"]["count"]), "affected_users": affected_users})
+    for error in syncErrorListing:    
+        syncErrorSummary.append({"id": urllib.parse.quote(json.dumps(error["_id"])), "service": error["_id"]["service"], "message": error["value"]["exemplar"], "count": int(error["value"]["count"]), "average_age": error["value"].get("recency_avg", 0)})
 
-    context["autoSyncErrorSummary"] = autoSyncErrorSummary
     context["syncErrorSummary"] = syncErrorSummary
 
     return render(req, "diag/errors.html", context)
+
+@diag_requireAuth
+def diag_error(req, error):
+    error = db.common_sync_errors.find_one({"_id": json.loads(urllib.parse.unquote(error))})
+    if not error:
+        return render(req, "diag/error_error_not_found.html")
+    affected_service_ids = error["value"]["connections"]
+    affected_user_ids = [x["_id"] for x in db.users.find({"ConnectedServices.ID": {"$in": affected_service_ids}}, {"_id":1})]
+
+    return render(req, "diag/error.html", {"error": error, "affected_user_ids": affected_user_ids})
 
 
 @diag_requireAuth

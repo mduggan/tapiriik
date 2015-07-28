@@ -26,6 +26,8 @@ from tapiriik.services.TrainerRoad import TrainerRoadService
 TrainerRoad = TrainerRoadService()
 from tapiriik.services.GoogleFit import GoogleFitService
 GoogleFit = GoogleFitService()
+from tapiriik.services.Smashrun import SmashrunService
+Smashrun = SmashrunService()
 
 PRIVATE_SERVICES = []
 try:

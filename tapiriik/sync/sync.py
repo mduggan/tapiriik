@@ -54,7 +54,7 @@ def _isWarning(exc):
 # It's practically an ORM!
 
 def _packServiceException(step, e):
-    res = {"Step": step, "Message": e.Message + "\n" + _formatExc(), "Block": e.Block, "Scope": e.Scope, "TriggerExhaustive": e.TriggerExhaustive}
+    res = {"Step": step, "Message": e.Message + "\n" + _formatExc(), "Block": e.Block, "Scope": e.Scope, "TriggerExhaustive": e.TriggerExhaustive, "Timestamp": datetime.utcnow()}
     if e.UserException:
         res["UserException"] = _packUserException(e.UserException)
     return res
@@ -129,7 +129,7 @@ class Sync:
             logger.warning("Could not find user %s - bailing" % user_id)
             message.ack() # Otherwise the entire thing grinds to a halt
             return
-        if body["generation"] != user["QueuedGeneration"]:
+        if body["generation"] != user.get("QueuedGeneration", None):
             # QueuedGeneration being different means they've gone through sync_scheduler since this particular message was queued
             # So, discard this and wait for that message to surface
             # Should only happen when I manually requeue people
@@ -229,7 +229,7 @@ class SynchronizationTask:
         db.users.update({"_id": self.user["_id"]}, {"$set": {"SynchronizationProgress": progress, "SynchronizationStep": step}})
 
     def _initializeUserLogging(self):
-        self._logging_file_handler = logging.handlers.RotatingFileHandler(USER_SYNC_LOGS + str(self.user["_id"]) + ".log", maxBytes=0, backupCount=10, encoding="utf-8")
+        self._logging_file_handler = logging.handlers.RotatingFileHandler(USER_SYNC_LOGS + str(self.user["_id"]) + ".log", maxBytes=0, backupCount=5, encoding="utf-8")
         self._logging_file_handler.setFormatter(logging.Formatter(self._logFormat, self._logDateFormat))
         self._logging_file_handler.doRollover()
         _global_logger.addHandler(self._logging_file_handler)
@@ -384,12 +384,12 @@ class SynchronizationTask:
         for conn in self._serviceConnections:
             if not conn.Service.ReceivesActivities:
                 # Nope.
-                pass
+                continue
             if conn._id in activity.ServiceDataCollection:
                 # The activity record is updated earlier for these, blegh.
-                pass
+                continue
             elif hasattr(conn, "SynchronizedActivities") and len([x for x in activity.UIDs if x in conn.SynchronizedActivities]):
-                pass
+                continue
             elif activity.Type not in conn.Service.SupportedActivities:
                 logger.debug("\t...%s doesn't support type %s" % (conn.Service.ID, activity.Type))
                 activity.Record.MarkAsNotPresentOn(conn, UserException(UserExceptionType.TypeUnsupported))
@@ -916,9 +916,11 @@ class SynchronizationTask:
                                 logger.debug(" %s since upload" % time_past)
                                 if time_remaining > timedelta(0):
                                     activity.Record.MarkAsNotPresentOtherwise(UserException(UserExceptionType.Deferred))
-                                    next_sync = datetime.utcnow() + time_remaining
-                                    # Reschedule them so this activity syncs immediately on schedule
-                                    sync_result.ForceScheduleNextSyncOnOrBefore(next_sync)
+                                    # Only reschedule if it won't slow down their auto-sync timing
+                                    if time_remaining < (Sync.SyncInterval + Sync.SyncIntervalJitter):
+                                        next_sync = datetime.utcnow() + time_remaining
+                                        # Reschedule them so this activity syncs immediately on schedule
+                                        sync_result.ForceScheduleNextSyncOnOrBefore(next_sync)
 
                                     logger.info("\t\t...is delayed for %s (out of %s)" % (time_remaining, timedelta(seconds=self._user_config["sync_upload_delay"])))
                                     # We need to ensure we check these again when the sync re-runs
@@ -1063,7 +1065,8 @@ class SynchronizationTask:
 
                             db.sync_stats.update({"ActivityID": activity.UID}, {"$addToSet": {"DestinationServices": destSvc.ID, "SourceServices": activitySource.ID}, "$set": {"Distance": activity.Stats.Distance.asUnits(ActivityStatisticUnit.Meters).Value, "Timestamp": datetime.utcnow()}}, upsert=True)
 
-                        self._pushRecentSyncActivity(full_activity, successful_destination_service_ids)
+                        if len(successful_destination_service_ids):
+                            self._pushRecentSyncActivity(full_activity, successful_destination_service_ids)
                         del full_activity
                         processedActivities += 1
                     except ActivityShouldNotSynchronizeException:
