@@ -54,7 +54,7 @@ def _isWarning(exc):
 # It's practically an ORM!
 
 def _packServiceException(step, e):
-    res = {"Step": step, "Message": e.Message + "\n" + _formatExc(), "Block": e.Block, "Scope": e.Scope, "TriggerExhaustive": e.TriggerExhaustive}
+    res = {"Step": step, "Message": e.Message + "\n" + _formatExc(), "Block": e.Block, "Scope": e.Scope, "TriggerExhaustive": e.TriggerExhaustive, "Timestamp": datetime.utcnow()}
     if e.UserException:
         res["UserException"] = _packUserException(e.UserException)
     return res
@@ -129,7 +129,7 @@ class Sync:
             logger.warning("Could not find user %s - bailing" % user_id)
             message.ack() # Otherwise the entire thing grinds to a halt
             return
-        if body["generation"] != user["QueuedGeneration"]:
+        if body["generation"] != user.get("QueuedGeneration", None):
             # QueuedGeneration being different means they've gone through sync_scheduler since this particular message was queued
             # So, discard this and wait for that message to surface
             # Should only happen when I manually requeue people
@@ -229,7 +229,7 @@ class SynchronizationTask:
         db.users.update({"_id": self.user["_id"]}, {"$set": {"SynchronizationProgress": progress, "SynchronizationStep": step}})
 
     def _initializeUserLogging(self):
-        self._logging_file_handler = logging.handlers.RotatingFileHandler(USER_SYNC_LOGS + str(self.user["_id"]) + ".log", maxBytes=0, backupCount=10, encoding="utf-8")
+        self._logging_file_handler = logging.handlers.RotatingFileHandler(USER_SYNC_LOGS + str(self.user["_id"]) + ".log", maxBytes=0, backupCount=5, encoding="utf-8")
         self._logging_file_handler.setFormatter(logging.Formatter(self._logFormat, self._logDateFormat))
         self._logging_file_handler.doRollover()
         _global_logger.addHandler(self._logging_file_handler)
@@ -384,12 +384,12 @@ class SynchronizationTask:
         for conn in self._serviceConnections:
             if not conn.Service.ReceivesActivities:
                 # Nope.
-                pass
+                continue
             if conn._id in activity.ServiceDataCollection:
                 # The activity record is updated earlier for these, blegh.
-                pass
+                continue
             elif hasattr(conn, "SynchronizedActivities") and len([x for x in activity.UIDs if x in conn.SynchronizedActivities]):
-                pass
+                continue
             elif activity.Type not in conn.Service.SupportedActivities:
                 logger.debug("\t...%s doesn't support type %s" % (conn.Service.ID, activity.Type))
                 activity.Record.MarkAsNotPresentOn(conn, UserException(UserExceptionType.TypeUnsupported))
@@ -622,14 +622,18 @@ class SynchronizationTask:
             logger.info("\tRetrieving list from " + svc.ID)
             svcActivities, svcExclusions = svc.DownloadActivityList(conn, exhaustive)
         except (ServiceException, ServiceWarning) as e:
-            # Historical note: there used to be a special case here where rate-limiting errors were fiddled with to trigger a full sync
-            # Wouldn't have been a problem except, elsewhere, exceptions are set as 'blocking' if they cause the retry counter to overfill
-            #  at which point those users would be indefinitely stuck doing full synchronizations, since those blocking exceptions aren't automatically cleared
-            #  so, now we don't set the special force-exhaustive flag that would stick around forever
-            # The original special case was there to ensure that, if there was a rate-limiting error while listing a service that previously had some other error,
-            #  ...the user would continue to receive full synchronizations until the rate limit error cleared (even after the old error was forgotten)
-            #  ...this being because of the fiddling mentioned above when the retry count was depleted - except that doesn't happen in the listing phase
-            #  so, it was never needed in the first place. I hope.
+            # Special-case rate limiting errors thrown during listing
+            # Otherwise, things will melt down when the limit is reached
+            # (lots of users will hit this error, then be marked for full synchronization later)
+            # (but that's not really required)
+            # Though we don't want to play with things if this exception needs to take the place of an earlier, more significant one
+            #
+            # I had previously removed this because I forgot that TriggerExhaustive defaults to true - this exception was *un*setting it
+            # The issue prompting that change stemmed more from the fact that the rate-limiting errors were being marked as blocking,
+            # ...not that they were getting marked as *not* triggering exhaustive synchronization
+
+            if e.UserException and e.UserException.Type == UserExceptionType.RateLimited:
+                e.TriggerExhaustive = conn._id in self._hasTransientSyncErrors and self._hasTransientSyncErrors[conn._id]
             self._syncErrors[conn._id].append(_packServiceException(SyncStep.List, e))
             self._excludeService(conn, e.UserException)
             if not _isWarning(e):
@@ -735,7 +739,7 @@ class SynchronizationTask:
                     # Persist the exception if we just exceeded the failure count
                     # (but not if a more useful blocking exception was provided)
                     activity.Record.IncrementFailureCount(dlSvcRecord)
-                    if activity.Record.GetFailureCount(dlSvcRecord) >= dlSvc.DownloadRetryCount and not e.Block:
+                    if activity.Record.GetFailureCount(dlSvcRecord) >= dlSvc.DownloadRetryCount and not e.Block and (not e.UserException or e.UserException.Type != UserExceptionType.RateLimited):
                         e.Block = True
                         e.Scope = ServiceExceptionScope.Activity
 
@@ -793,7 +797,8 @@ class SynchronizationTask:
         except (ServiceException, ServiceWarning) as e:
             if not _isWarning(e):
                 activity.Record.IncrementFailureCount(destinationServiceRec)
-                if activity.Record.GetFailureCount(destinationServiceRec) >= destSvc.UploadRetryCount and not e.Block:
+                # The rate-limiting special case here is so that users don't get stranded due to rate limiting issues outside of their control
+                if activity.Record.GetFailureCount(destinationServiceRec) >= destSvc.UploadRetryCount and not e.Block and (not e.UserException or e.UserException.Type != UserExceptionType.RateLimited):
                     e.Block = True
                     e.Scope = ServiceExceptionScope.Activity
 
@@ -911,9 +916,11 @@ class SynchronizationTask:
                                 logger.debug(" %s since upload" % time_past)
                                 if time_remaining > timedelta(0):
                                     activity.Record.MarkAsNotPresentOtherwise(UserException(UserExceptionType.Deferred))
-                                    next_sync = datetime.utcnow() + time_remaining
-                                    # Reschedule them so this activity syncs immediately on schedule
-                                    sync_result.ForceScheduleNextSyncOnOrBefore(next_sync)
+                                    # Only reschedule if it won't slow down their auto-sync timing
+                                    if time_remaining < (Sync.SyncInterval + Sync.SyncIntervalJitter):
+                                        next_sync = datetime.utcnow() + time_remaining
+                                        # Reschedule them so this activity syncs immediately on schedule
+                                        sync_result.ForceScheduleNextSyncOnOrBefore(next_sync)
 
                                     logger.info("\t\t...is delayed for %s (out of %s)" % (time_remaining, timedelta(seconds=self._user_config["sync_upload_delay"])))
                                     # We need to ensure we check these again when the sync re-runs
@@ -1012,8 +1019,8 @@ class SynchronizationTask:
 
                         try:
                             full_activity.CheckTimestampSanity()
-                        except ValueError:
-                            logger.warning("\t\t...failed timestamp sanity check")
+                        except ValueError as e:
+                            logger.warning("\t\t...failed timestamp sanity check - %s" % e)
                             # self._accumulateExclusions(full_activity.SourceConnection, APIExcludeActivity("Timestamp sanity check failed", activity=full_activity, permanent=True))
                             # activity.Record.MarkAsNotPresentOtherwise(UserException(UserExceptionType.SanityError))
                             # raise ActivityShouldNotSynchronizeException()
@@ -1058,7 +1065,8 @@ class SynchronizationTask:
 
                             db.sync_stats.update({"ActivityID": activity.UID}, {"$addToSet": {"DestinationServices": destSvc.ID, "SourceServices": activitySource.ID}, "$set": {"Distance": activity.Stats.Distance.asUnits(ActivityStatisticUnit.Meters).Value, "Timestamp": datetime.utcnow()}}, upsert=True)
 
-                        self._pushRecentSyncActivity(full_activity, successful_destination_service_ids)
+                        if len(successful_destination_service_ids):
+                            self._pushRecentSyncActivity(full_activity, successful_destination_service_ids)
                         del full_activity
                         processedActivities += 1
                     except ActivityShouldNotSynchronizeException:

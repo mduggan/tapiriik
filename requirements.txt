@@ -1,5 +1,5 @@
 requests==2.2.1
-pymongo
+pymongo==3.0.1
 pytz
 lxml
 git+https://github.com/cpfair/dropbox-sdk-python.git
@@ -12,3 +12,4 @@ requests_oauthlib==0.4.0
 redis
 django-ipware
 google-api-python-client-py3
+smashrun-client>=0.2.0

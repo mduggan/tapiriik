@@ -25,6 +25,11 @@ urlpatterns = patterns('',
     url(r'^account/settz$', 'tapiriik.web.views.account_settimezone', {}, name='account_set_timezone', ),
     url(r'^account/configure$', 'tapiriik.web.views.account_setconfig', {}, name='account_set_config', ),
 
+    url(r'^account/rollback/?$', 'tapiriik.web.views.account_rollback_initiate', {}, name='account_rollback_initiate', ),
+    url(r'^account/rollback/(?P<task_id>.+)$', 'tapiriik.web.views.account_rollback_status', {}, name='account_rollback_status', ),
+
+    url(r'^rollback$', 'tapiriik.web.views.rollback_dashboard', {}, name='rollback_dashboard', ),
+
     url(r'^configure/save/(?P<service>.+)?$', 'tapiriik.web.views.config.config_save', {}, name='config_save', ),
     url(r'^configure/dropbox$', 'tapiriik.web.views.config.dropbox', {}, name='dropbox_config', ),
     url(r'^configure/flow/save/(?P<service>.+)?$', 'tapiriik.web.views.config.config_flow_save', {}, name='config_flow_save', ),
@@ -45,6 +50,7 @@ urlpatterns = patterns('',
 
     url(r'^diagnostics/$', 'tapiriik.web.views.diag_dashboard', {}, name='diagnostics_dashboard'),
     url(r'^diagnostics/errors$', 'tapiriik.web.views.diag_errors', {}, name='diagnostics_errors'),
+    url(r'^diagnostics/error/(?P<error>.+)$', 'tapiriik.web.views.diag_error', {}, name='diagnostics_error'),
     url(r'^diagnostics/graphs$', 'tapiriik.web.views.diag_graphs', {}, name='diagnostics_graphs'),
     url(r'^diagnostics/user/unsu$', 'tapiriik.web.views.diag_unsu', {}, name='diagnostics_unsu'),
     url(r'^diagnostics/user/(?P<user>.+)$', 'tapiriik.web.views.diag_user', {}, name='diagnostics_user'),

@@ -9,7 +9,8 @@ class Service:
     # These options are used as the back for all service record's configurations
     _globalConfigurationDefaults = {
         "sync_private": False,
-        "allow_activity_flow_exception_bypass_via_self": False
+        "allow_activity_flow_exception_bypass_via_self": False,
+        "auto_pause": False
     }
 
     def Init():
@@ -24,7 +25,7 @@ class Service:
         raise ValueError
 
     def List():
-        return [RunKeeper, Strava, GarminConnect, SportTracks, Dropbox, GoogleDrive, TrainingPeaks, RideWithGPS, Endomondo, Motivato, NikePlus, VeloHero, TrainerRoad] + PRIVATE_SERVICES
+        return [RunKeeper, Strava, GarminConnect, SportTracks, Dropbox, GoogleDrive, TrainingPeaks, RideWithGPS, Endomondo, Motivato, NikePlus, VeloHero, TrainerRoad, Smashrun] + PRIVATE_SERVICES
 
     def PreferredDownloadPriorityList():
         # Ideally, we'd make an informed decision based on whatever features the activity had
@@ -33,6 +34,7 @@ class Service:
         return [
             TrainerRoad, # Special case, since TR has a lot more data in some very specific areas
             GarminConnect, # The reference
+            Smashrun,  # TODO: not sure if this is the right place, but it seems to have a lot of data
             SportTracks, # Pretty much equivalent to GC, no temperature (not that GC temperature works all thar well now, but I digress)
             TrainingPeaks, # No seperate run cadence, but has temperature
             Dropbox, # Equivalent to any of the above
