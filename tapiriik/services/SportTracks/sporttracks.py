@@ -135,7 +135,7 @@ class SportTracksService(ServiceBase):
 
     SupportedActivities = list(_reverseActivityMappings.keys())
 
-    _oaClient = OAuth2Client(SPORTTRACKS_CLIENT_ID, SPORTTRACKS_CLIENT_SECRET, "https://api.sporttracks.mobi/oauth2/token", tokenTimeoutMin=115)
+    _oaClient = OAuth2Client(SPORTTRACKS_CLIENT_ID, SPORTTRACKS_CLIENT_SECRET, "https://api.sporttracks.mobi/oauth2/token", tokenTimeoutMin=115, cacheName="sporttracks")
 
     def WebInit(self):
         self.UserAuthorizationURL = "https://api.sporttracks.mobi/oauth2/authorize?response_type=code&client_id=%s&state=mobi_api" % SPORTTRACKS_CLIENT_ID
