@@ -142,7 +142,8 @@ class GoogleFitService(ServiceBase):
 
             for s in slist:
                 act = UploadedActivity()
-                if "application" not in s:
+                if "application" not in s or s["activityType"] not in googlefit_to_atype:
+                    # Unknown/unsupported activity type or no app data
                     continue
                 act.StartTime = pytz.utc.localize(datetime.utcfromtimestamp(float(s["startTimeMillis"])/1000))
                 act.EndTime = pytz.utc.localize(datetime.utcfromtimestamp(float(s["endTimeMillis"])/1000))

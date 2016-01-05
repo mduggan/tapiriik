@@ -111,6 +111,8 @@ googlefit_to_atype = {
     104: ActivityType.Skating,  # Ice skating
     105: ActivityType.Skating,  # Indoor skating
     106: ActivityType.Other,  # Curling
+    108: ActivityType.Other,  # Other (unclassified fitness activity)
+    # 109-112 are sleep - ignore them
 }
 
 # interchange.ActivityType to Google Fit integer
