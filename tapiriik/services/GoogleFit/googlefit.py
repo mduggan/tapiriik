@@ -1,9 +1,8 @@
 from tapiriik.settings import WEB_ROOT, GOOGLEFIT_CLIENT_ID, GOOGLEFIT_CLIENT_SECRET
 from tapiriik.services.service_base import ServiceAuthenticationType, ServiceBase
-from tapiriik.services.service_record import ServiceRecord
 from tapiriik.services.oauth2 import OAuth2Client
 from tapiriik.services.interchange import UploadedActivity, Waypoint, WaypointType, Location, Lap
-from tapiriik.services.api import APIException, UserException, UserExceptionType, APIExcludeActivity, ServiceException
+from tapiriik.services.api import APIException
 from tapiriik.database import cachedb
 from django.core.urlresolvers import reverse
 import logging
@@ -16,13 +15,7 @@ import calendar
 from .activitytypes import googlefit_to_atype, atype_to_googlefit
 
 logger = logging.getLogger(__name__)
-#
-# com.google.location.sample    The user's current location.    Location
-# latitude (float—degrees)
-# longitude (float—degrees)
-# accuracy (float—meters)
-# altitude (float—meters)
-#
+
 # Full scope needed so that we can read files that user adds by hand
 _OAUTH_SCOPES = [
     "https://www.googleapis.com/auth/userinfo.profile",
@@ -47,9 +40,15 @@ def _floatField(name):
     # Description for field when creating source.
     return {"name": name, "format": "floatPoint"}
 
+
+def _intField(name):
+    # Description for field when creating source.
+    return {"name": name, "format": "integer"}
+
 # See https://developers.google.com/fit/rest/v1/data-types
 # We have to include the description when creating sources, for reasons.
 SUPPORTED_DATATYPES = {
+    "com.google.activity.summary": [_intField("activity"), _intField("duration"), _intField("num_segments")],
     # "com.google.activity.sample" : [...],
     # "com.google.activity.segment": [...], # TODO: would be nice to support this as Lap?
     "com.google.location.sample": [_floatField("latitude"), _floatField("longitude"), _floatField("accuracy"), _floatField("altitude")],
@@ -68,6 +67,10 @@ APP_NAME = "com.tapiriik.sync"
 
 def _fpVal(f):
     return {"fpVal": f}
+
+
+def _intVal(i):
+    return {"intVal": int(i)}
 
 
 def _sourceAppName(source):
@@ -90,10 +93,6 @@ class GoogleFitService(ServiceBase):
     SupportsTemp = False  # could created a custom data type, but not supported by default..
     SupportedActivities = atype_to_googlefit.keys()
     GlobalRateLimits = [(timedelta(days=1), 86400)]
-
-    # FIXME: just while testing, ignore retry counts.
-    UploadRetryCount = 5000
-    DownloadRetryCount = 5000
 
     _oaClient = OAuth2Client(GOOGLEFIT_CLIENT_ID, GOOGLEFIT_CLIENT_SECRET, GOOGLE_TOKEN_URL, tokenTimeoutMin=55)
 
@@ -148,7 +147,7 @@ class GoogleFitService(ServiceBase):
                 act.StartTime = pytz.utc.localize(datetime.utcfromtimestamp(float(s["startTimeMillis"])/1000))
                 act.EndTime = pytz.utc.localize(datetime.utcfromtimestamp(float(s["endTimeMillis"])/1000))
                 act.Type = googlefit_to_atype[s["activityType"]]
-                # FIXME; this is not really right, but google fit doesn't support timezones.  at least all timestamps are UTC.
+                # NOTE: this is not really right, but google fit doesn't support timezones.  at least all timestamps are UTC.
                 act.TZ = pytz.UTC
                 act.Notes = s.get("description") or None
                 act.Name = s.get("name") or None
@@ -366,6 +365,8 @@ class GoogleFitService(ServiceBase):
                 if wp.Power is not None:
                     power.append((wp_nanos, [_fpVal(wp.Power)]))
 
+        # Each point type is a separate stream, so we have to split them out
+        # and upload them separately.
         dataset_url = API_BASE_URL + "dataSources/%s/datasets/%d-%d"
         data_types = [
             (locs, "com.google.location.sample"),
@@ -381,27 +382,50 @@ class GoogleFitService(ServiceBase):
         for points, tname in data_types:
             if not points:
                 continue
+
             s = [x for x in sources if _sourceAppName(x) == APP_NAME and x["dataType"]["name"] == tname]
             if not s or "dataStreamId" not in s[0]:
                 raise APIException("Data source for %s not created correctly!" % tname)
             streamId = s[0]["dataStreamId"]
 
-            #logger.debug("Upload %d points for %s to %s" % (len(points), tname, dataset_url % (streamId, points[0][0], points[-1][0])))
+            min_ns = points[0][0]
+            max_ns = points[-1][0]
+
+            logger.debug("Process %d points for %s to %s" % (len(points), tname, dataset_url % (streamId, min_ns, max_ns)))
 
             def make_point(x):
                 return {"dataTypeName": tname, "startTimeNanos": x[0], "endTimeNanos": x[0], "value": x[1]}
             point_list = [make_point(x) for x in points]
 
-            put_data = {"dataSourceId": streamId, "minStartTimeNs": points[0][0], "maxEndTimeNs": points[-1][0], "point": point_list}
-            response = session.patch(dataset_url % (streamId, points[0][0], points[-1][0]), data=json.dumps(put_data), headers=POST_HEADER)
+            put_data = {"dataSourceId": streamId, "minStartTimeNs": min_ns, "maxEndTimeNs": max_ns, "point": point_list}
+            response = session.patch(dataset_url % (streamId, min_ns, max_ns), data=json.dumps(put_data), headers=POST_HEADER)
 
             if response.status_code != 200:
                 raise APIException("Error %d adding points to google fit stream: %s" % (response.status_code, response.text))
-
             try:
                 # TODO: check this matches what we put in.
                 response.json()
             except:
                 raise APIException("Response to adding google fit points not json: %s" % (response.text,))
+
+        # Add a summary point (a bit ugly.. mostly duplicated code from loop above)
+        s = [x for x in sources if _sourceAppName(x) == APP_NAME and x["dataType"]["name"] == "com.google.activity.summary"]
+        if not s or "dataStreamId" not in s[0]:
+            raise APIException("Data source for summary not created correctly!")
+        streamId = s[0]["dataStreamId"]
+        startns = startms * 1e6
+        endns = endms * 1e6
+        point_list = [{"dataTypeName": "com.google.activity.summary",
+                       "startTimeNanos": startns, "endTimeNanos": endns,
+                       "value": [_intVal(atype_to_googlefit[activity.Type]), _intVal(startms - endms), _intVal(1)]}]
+        put_data = {"dataSourceId": streamId, "minStartTimeNs": startns, "maxEndTimeNs": endns, "point": point_list}
+        logger.debug("Add summary point for %s" % (dataset_url % (streamId, startns, endns)))
+        response = session.patch(dataset_url % (streamId, startns, endns), data=json.dumps(put_data), headers=POST_HEADER)
+        if response.status_code != 200:
+            raise APIException("Error %d adding points to google fit stream: %s" % (response.status_code, response.text))
+        try:
+            response.json()
+        except:
+            raise APIException("Response to adding google fit points not json: %s" % (response.text,))
 
         return str(startms)
