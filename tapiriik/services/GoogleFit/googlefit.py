@@ -391,7 +391,7 @@ class GoogleFitService(ServiceBase):
             min_ns = points[0][0]
             max_ns = points[-1][0]
 
-            logger.debug("Process %d points for %s to %s" % (len(points), tname, dataset_url % (streamId, min_ns, max_ns)))
+            #logger.debug("Process %d points for %s to %s" % (len(points), tname, dataset_url % (streamId, min_ns, max_ns)))
 
             def make_point(x):
                 return {"dataTypeName": tname, "startTimeNanos": x[0], "endTimeNanos": x[0], "value": x[1]}

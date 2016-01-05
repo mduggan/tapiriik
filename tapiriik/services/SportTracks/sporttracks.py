@@ -529,5 +529,3 @@ class SportTracksService(ServiceBase):
                 raise APIException("ST.mobi trial expired", block=True, user_exception=UserException(UserExceptionType.AccountExpired, intervention_required=True))
             raise APIException("Unable to upload activity %s" % upload_resp.text)
         return upload_resp.json()["uris"][0]
-
-
